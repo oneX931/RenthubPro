@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+*.user
+appsettings.*.local.json
+wwwroot/uploads/*
+!wwwroot/uploads/.gitkeep
+setup_git.sh
