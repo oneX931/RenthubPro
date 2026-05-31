@@ -1,0 +1,324 @@
+@page "/admin"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "AdminOnly")]
+@inject UserManager<ApplicationUser> UserManager
+@inject IDbContextFactory<ApplicationDbContext> DbFactory
+@inject PremiseService Premises
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>Панель администратора — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Панель администратора</h1>
+        <p class="subtitle">Пользователи, помещения и статистика системы</p>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="alert @(_isError ? "alert-error" : "alert-success")">@_message</div>
+}
+
+@if (_editedAfterRemovalCount > 0)
+{
+    <div class="alert alert-info">
+        Снятых объявлений изменено арендодателями: <b>@_editedAfterRemovalCount</b>.
+        Проверьте их ниже (отмечены «изменено») и при необходимости верните на площадку.
+    </div>
+}
+
+<div class="stats-grid grid" style="margin-bottom:1.75rem;">
+    <div class="stat"><div class="label">Пользователей</div><div class="value">@_usersTotal</div></div>
+    <div class="stat"><div class="label">Арендодателей</div><div class="value">@_landlords</div></div>
+    <div class="stat"><div class="label">Арендаторов</div><div class="value">@_tenants</div></div>
+    <div class="stat"><div class="label">Помещений</div><div class="value accent">@_premisesTotal</div></div>
+    <div class="stat"><div class="label">Договоров</div><div class="value">@_contractsTotal</div></div>
+    <div class="stat"><div class="label">Действующих договоров</div><div class="value">@_activeContracts</div></div>
+    <div class="stat"><div class="label">Счетов выставлено</div><div class="value">@_invoicesTotal</div></div>
+    <div class="stat"><div class="label">Общая задолженность</div><div class="value accent">@_outstanding.ToString("0.00") BYN</div></div>
+</div>
+
+<div class="card" style="margin-bottom:1.75rem;">
+    <h3 class="card-title">Пользователи</h3>
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Имя</th>
+                    <th>Телефон</th>
+                    <th>E-mail</th>
+                    <th>Роль</th>
+                    <th>Статус</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var row in _users)
+                {
+                    <tr>
+                        <td>@row.User.FullName</td>
+                        <td>@(row.User.PhoneNumber ?? "—")</td>
+                        <td>@(row.User.Email ?? "—")</td>
+                        <td>@RoleRu(row.Role)</td>
+                        <td>
+                            @if (row.User.IsBlocked)
+                            {
+                                <span class="badge badge-overdue">Заблокирован</span>
+                                @if (!string.IsNullOrWhiteSpace(row.User.BlockReason))
+                                {
+                                    <div class="muted" style="font-size:.78rem; margin-top:.25rem;">@row.User.BlockReason</div>
+                                }
+                            }
+                            else
+                            {
+                                <span class="badge badge-available">Активен</span>
+                            }
+                        </td>
+                        <td>
+                            @if (row.Role == Roles.Admin || row.User.Id == _myId)
+                            {
+                                <span class="muted" style="font-size:.8rem;">—</span>
+                            }
+                            else if (row.User.IsBlocked)
+                            {
+                                <button class="btn btn-outline btn-sm" @onclick="() => UnblockAsync(row.User.Id)" disabled="@_busy">Разблокировать</button>
+                            }
+                            else if (_blockingUserId == row.User.Id)
+                            {
+                                <div style="display:flex; flex-direction:column; gap:.4rem; min-width:230px;">
+                                    <input class="form-control" style="font-size:.85rem;" @bind="_blockReason" placeholder="Причина блокировки" />
+                                    <div style="display:flex; gap:.4rem;">
+                                        <button class="btn btn-danger btn-sm" @onclick="() => ConfirmBlockAsync(row.User.Id)" disabled="@_busy">Заблокировать</button>
+                                        <button class="btn btn-ghost btn-sm" @onclick="CancelBlock">Отмена</button>
+                                    </div>
+                                </div>
+                            }
+                            else
+                            {
+                                <button class="btn btn-danger btn-sm" @onclick="() => StartBlock(row.User.Id)">Заблокировать</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<div class="card">
+    <h3 class="card-title">Помещения (@_premisesList.Count)</h3>
+    @if (_premisesList.Count == 0)
+    {
+        <p class="muted">Помещений пока нет.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table class="data">
+                <thead>
+                    <tr>
+                        <th>Название</th>
+                        <th>Тип</th>
+                        <th>Площадь</th>
+                        <th>Арендодатель</th>
+                        <th>Статус</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in _premisesList)
+                    {
+                        <tr>
+                            <td>
+                                <a href="@($"/premise/{p.Id}")">@p.Title</a>
+                                @if (p.IsRemovedByAdmin && !string.IsNullOrWhiteSpace(p.AdminRemovalReason))
+                                {
+                                    <div class="muted" style="font-size:.78rem; margin-top:.25rem;">Причина: @p.AdminRemovalReason</div>
+                                }
+                            </td>
+                            <td>@p.Type.Ru()</td>
+                            <td>@p.Area.ToString("0.#") м²</td>
+                            <td>@(p.Landlord?.FullName ?? "—")</td>
+                            <td>
+                                @if (p.IsRemovedByAdmin)
+                                {
+                                    <span class="badge badge-overdue">Снято</span>
+                                    @if (p.EditedAfterRemoval)
+                                    {
+                                        <span class="badge badge-pending" style="margin-left:.3rem;">изменено</span>
+                                    }
+                                }
+                                else
+                                {
+                                    @p.Status.Ru()
+                                }
+                            </td>
+                            <td>
+                                @if (p.IsRemovedByAdmin)
+                                {
+                                    <button class="btn btn-outline btn-sm" @onclick="() => RestoreAsync(p.Id)" disabled="@_busy">Вернуть</button>
+                                }
+                                else if (_removingPremiseId == p.Id)
+                                {
+                                    <div style="display:flex; flex-direction:column; gap:.4rem; min-width:230px;">
+                                        <input class="form-control" style="font-size:.85rem;" @bind="_removeReason" placeholder="Причина снятия" />
+                                        <div style="display:flex; gap:.4rem;">
+                                            <button class="btn btn-danger btn-sm" @onclick="() => ConfirmRemoveAsync(p.Id)" disabled="@_busy">Снять</button>
+                                            <button class="btn btn-ghost btn-sm" @onclick="CancelRemove">Отмена</button>
+                                        </div>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <button class="btn btn-danger btn-sm" @onclick="() => StartRemove(p.Id)">Снять с публикации</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@code {
+    private record UserRow(ApplicationUser User, string Role);
+
+    private List<UserRow> _users = new();
+    private List<Premise> _premisesList = new();
+
+    private int _usersTotal, _landlords, _tenants;
+    private int _premisesTotal, _contractsTotal, _activeContracts, _invoicesTotal;
+    private int _editedAfterRemovalCount;
+    private decimal _outstanding;
+
+    private string _myId = "";
+    private string? _message;
+    private bool _isError;
+    private bool _busy;
+
+    private string? _blockingUserId;
+    private string _blockReason = "";
+    private int? _removingPremiseId;
+    private string _removeReason = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _myId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        var users = await UserManager.Users.OrderBy(u => u.CreatedAt).ToListAsync();
+        var rows = new List<UserRow>();
+        foreach (var u in users)
+        {
+            var roles = await UserManager.GetRolesAsync(u);
+            rows.Add(new UserRow(u, roles.FirstOrDefault() ?? "—"));
+        }
+        _users = rows;
+
+        _usersTotal = users.Count;
+        _landlords = rows.Count(r => r.Role == Roles.Landlord);
+        _tenants = rows.Count(r => r.Role == Roles.Tenant);
+
+        await using var db = await DbFactory.CreateDbContextAsync();
+
+        _premisesList = await db.Premises.Include(p => p.Landlord)
+            .OrderByDescending(p => p.CreatedAt).ToListAsync();
+        _premisesTotal = _premisesList.Count(p => !p.IsRemovedByAdmin);
+        _editedAfterRemovalCount = _premisesList.Count(p => p.IsRemovedByAdmin && p.EditedAfterRemoval);
+
+        var today = DateTime.UtcNow.Date;
+        _contractsTotal = await db.Contracts.CountAsync();
+        _activeContracts = await db.Contracts.CountAsync(c =>
+            c.Status == ContractStatus.Active && c.StartDate <= today && today <= c.EndDate);
+
+        _invoicesTotal = await db.Invoices.CountAsync();
+        var sum = await db.Invoices.Where(i => i.Status != InvoiceStatus.Paid)
+            .SumAsync(i => (decimal?)i.Amount);
+        _outstanding = sum ?? 0m;
+    }
+
+    private void StartBlock(string userId) { _blockingUserId = userId; _blockReason = ""; _message = null; }
+    private void CancelBlock() => _blockingUserId = null;
+
+    private async Task ConfirmBlockAsync(string userId)
+    {
+        if (string.IsNullOrWhiteSpace(_blockReason)) { _isError = true; _message = "Укажите причину блокировки."; return; }
+        await SetBlockedAsync(userId, true, _blockReason.Trim());
+        _blockingUserId = null;
+    }
+
+    private Task UnblockAsync(string userId) => SetBlockedAsync(userId, false, null);
+
+    private async Task SetBlockedAsync(string userId, bool blocked, string? reason)
+    {
+        _message = null;
+        _busy = true;
+        try
+        {
+            var user = await UserManager.FindByIdAsync(userId);
+            if (user is null) { _isError = true; _message = "Пользователь не найден."; return; }
+
+            user.IsBlocked = blocked;
+            user.BlockReason = blocked ? reason : null;
+            var result = await UserManager.UpdateAsync(user);
+            if (result.Succeeded)
+            {
+                await UserManager.UpdateSecurityStampAsync(user);
+                _isError = false;
+                _message = blocked ? "Пользователь заблокирован." : "Пользователь разблокирован.";
+            }
+            else
+            {
+                _isError = true;
+                _message = string.Join(" ", result.Errors.Select(e => e.Description));
+            }
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private void StartRemove(int premiseId) { _removingPremiseId = premiseId; _removeReason = ""; _message = null; }
+    private void CancelRemove() => _removingPremiseId = null;
+
+    private async Task ConfirmRemoveAsync(int premiseId)
+    {
+        _message = null;
+        _busy = true;
+        try
+        {
+            var result = await Premises.AdminRemoveAsync(premiseId, _removeReason);
+            _isError = !result.Success;
+            _message = result.Success ? "Помещение снято с публикации." : result.Error;
+            if (result.Success) _removingPremiseId = null;
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task RestoreAsync(int premiseId)
+    {
+        _busy = true;
+        try
+        {
+            var result = await Premises.AdminRestoreAsync(premiseId);
+            _isError = !result.Success;
+            _message = result.Success ? "Помещение возвращено." : result.Error;
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private static string RoleRu(string role) => role switch
+    {
+        Roles.Admin => "Администратор",
+        Roles.Landlord => "Арендодатель",
+        Roles.Tenant => "Арендатор",
+        _ => "—"
+    };
+}

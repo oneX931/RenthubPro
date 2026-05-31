@@ -1,0 +1,173 @@
+@page "/tenant/invoices"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "TenantOnly")]
+@inject InvoiceService Invoices
+@inject IWebHostEnvironment Env
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>Мои счета — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Мои счета</h1>
+        <p class="subtitle">Оплата счетов, чеки и скачивание</p>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="alert @(_isError ? "alert-error" : "alert-success")">@_message</div>
+}
+
+@if (_invoices is null)
+{
+    <div class="loading"><p>Загрузка…</p></div>
+}
+else if (_invoices.Count == 0)
+{
+    <div class="empty-state">
+        <div class="big">💳</div>
+        <p>Счетов пока нет.</p>
+    </div>
+}
+else
+{
+    <div class="stats-grid grid" style="margin-bottom:1.5rem;">
+        <div class="stat">
+            <div class="label">Всего к оплате</div>
+            <div class="value">@_total.ToString("0.00") BYN</div>
+        </div>
+        <div class="stat">
+            <div class="label">Оплачено</div>
+            <div class="value">@_paid.ToString("0.00") BYN</div>
+        </div>
+        <div class="stat">
+            <div class="label">К оплате осталось</div>
+            <div class="value accent">@((_total - _paid).ToString("0.00")) BYN</div>
+        </div>
+    </div>
+
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Помещение</th>
+                    <th>Выставлен</th>
+                    <th>Срок оплаты</th>
+                    <th>Назначение</th>
+                    <th>Сумма</th>
+                    <th>Статус</th>
+                    <th>Чек об оплате</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var i in _invoices)
+                {
+                    <tr>
+                        <td>@(i.Contract?.Premise?.Title ?? "—")</td>
+                        <td>@i.IssuedAt.ToString("dd.MM.yyyy")</td>
+                        <td>@i.DueDate.ToString("dd.MM.yyyy")</td>
+                        <td>@(string.IsNullOrWhiteSpace(i.Note) ? "—" : i.Note)</td>
+                        <td>@i.Amount.ToString("0.00") BYN</td>
+                        <td>@StatusBadge(i.Status)</td>
+                        <td>
+                            @if (!string.IsNullOrEmpty(i.ReceiptPath))
+                            {
+                                <a class="btn btn-ghost btn-sm" href="@i.ReceiptPath" target="_blank">Открыть чек</a>
+                                <InputFile OnChange="e => UploadReceiptAsync(i.Id, e)" accept="image/*,.pdf"
+                                           class="form-control" style="margin-top:.4rem; font-size:.8rem;" />
+                            }
+                            else
+                            {
+                                <InputFile OnChange="e => UploadReceiptAsync(i.Id, e)" accept="image/*,.pdf"
+                                           class="form-control" style="font-size:.8rem;" />
+                            }
+                        </td>
+                        <td>
+                            <a class="btn btn-ghost btn-sm" href="@($"/invoices/{i.Id}/download")" target="_blank">Скачать счёт</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Invoice>? _invoices;
+    private decimal _total;
+    private decimal _paid;
+    private string _tenantId = "";
+    private string? _message;
+    private bool _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _tenantId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _invoices = await Invoices.GetInvoicesForTenantAsync(_tenantId);
+        _total = _invoices.Sum(i => i.Amount);
+        _paid = _invoices.Where(i => i.Status == InvoiceStatus.Paid).Sum(i => i.Amount);
+    }
+
+    private async Task UploadReceiptAsync(int invoiceId, InputFileChangeEventArgs e)
+    {
+        _message = null;
+        var file = e.File;
+        const long maxSize = 5 * 1024 * 1024;
+        if (file.Size > maxSize)
+        {
+            _isError = true;
+            _message = "Файл слишком большой (максимум 5 МБ).";
+            return;
+        }
+
+        try
+        {
+            var webRoot = Env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+            var dir = Path.Combine(webRoot, "uploads", "receipts");
+            Directory.CreateDirectory(dir);
+
+            var ext = Path.GetExtension(file.Name);
+            if (string.IsNullOrWhiteSpace(ext)) ext = ".bin";
+            var fileName = $"{Guid.NewGuid():N}{ext}";
+            var fullPath = Path.Combine(dir, fileName);
+
+            await using (var fs = File.Create(fullPath))
+            {
+                await file.OpenReadStream(maxSize).CopyToAsync(fs);
+            }
+
+            var relativePath = $"/uploads/receipts/{fileName}";
+            var result = await Invoices.AttachReceiptAsync(invoiceId, _tenantId, relativePath);
+            _isError = !result.Success;
+            _message = result.Success ? "Чек прикреплён. Арендодатель сможет его посмотреть." : result.Error;
+            await ReloadAsync();
+        }
+        catch (Exception)
+        {
+            _isError = true;
+            _message = "Не удалось загрузить файл чека.";
+        }
+    }
+
+    private static RenderFragment StatusBadge(InvoiceStatus s) => builder =>
+    {
+        var cls = s switch
+        {
+            InvoiceStatus.Paid => "badge badge-paid",
+            InvoiceStatus.Pending => "badge badge-pending",
+            _ => "badge badge-overdue"
+        };
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", cls);
+        builder.AddContent(2, s.Ru());
+        builder.CloseElement();
+    };
+}

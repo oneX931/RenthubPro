@@ -1,0 +1,130 @@
+@page "/tenant/contracts"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "TenantOnly")]
+@inject ContractService Contracts
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>Мои договоры — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Мои договоры</h1>
+        <p class="subtitle">Договоры аренды, подписание и история</p>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="alert @(_isError ? "alert-error" : "alert-success")">@_message</div>
+}
+
+@if (_contracts is null)
+{
+    <div class="loading"><p>Загрузка…</p></div>
+}
+else if (_contracts.Count == 0)
+{
+    <div class="empty-state">
+        <div class="big">📄</div>
+        <p>У вас пока нет договоров аренды.</p>
+        <a class="btn btn-primary" href="/catalog">Подобрать помещение</a>
+    </div>
+}
+else
+{
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Помещение</th>
+                    <th>Адрес</th>
+                    <th>Арендодатель</th>
+                    <th>Период</th>
+                    <th>Платёж/мес</th>
+                    <th>Статус</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var c in _contracts)
+                {
+                    <tr>
+                        <td>
+                            @if (c.Premise is not null)
+                            {
+                                <a href="@($"/premise/{c.PremiseId}")">@c.Premise.Title</a>
+                            }
+                            else { <text>—</text> }
+                        </td>
+                        <td>@(c.Premise?.Address ?? "—")</td>
+                        <td>@(c.Premise?.Landlord?.FullName ?? "—")</td>
+                        <td>@c.StartDate.ToString("dd.MM.yyyy") — @c.EndDate.ToString("dd.MM.yyyy")</td>
+                        <td>@c.MonthlyAmount.ToString("0.00") BYN</td>
+                        <td>@StatusBadge(c)</td>
+                        <td>
+                            @if (c.Status == ContractStatus.PendingSignature)
+                            {
+                                <button class="btn btn-primary btn-sm" @onclick="() => SignAsync(c.Id)" disabled="@_busy">
+                                    Подписать
+                                </button>
+                            }
+                            else if (c.Status == ContractStatus.Active && c.SignedAt is not null)
+                            {
+                                <span class="muted" style="font-size:.8rem;">Подписан @c.SignedAt.Value.ToString("dd.MM.yyyy")</span>
+                            }
+                            else
+                            {
+                                <span class="muted" style="font-size:.8rem;">—</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Contract>? _contracts;
+    private string _tenantId = "";
+    private string? _message;
+    private bool _isError;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _tenantId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+        _contracts = await Contracts.GetContractsForTenantAsync(_tenantId);
+    }
+
+    private async Task SignAsync(int contractId)
+    {
+        _message = null;
+        _busy = true;
+        try
+        {
+            var result = await Contracts.SignContractAsync(contractId, _tenantId);
+            _isError = !result.Success;
+            _message = result.Success ? "Договор подписан. Теперь он действует." : result.Error;
+            _contracts = await Contracts.GetContractsForTenantAsync(_tenantId);
+        }
+        finally { _busy = false; }
+    }
+
+    private RenderFragment StatusBadge(Contract c) => builder =>
+    {
+        string cls, text;
+        var today = DateTime.UtcNow.Date;
+        if (c.Status == ContractStatus.PendingSignature) { cls = "badge badge-pending"; text = "Ожидает подписания"; }
+        else if (c.Status == ContractStatus.Terminated) { cls = "badge badge-overdue"; text = "Расторгнут"; }
+        else if (c.EndDate < today) { cls = "badge badge-neutral"; text = "Завершён"; }
+        else if (c.StartDate > today) { cls = "badge badge-pending"; text = "Запланирован"; }
+        else { cls = "badge badge-available"; text = "Действует"; }
+
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", cls);
+        builder.AddContent(2, text);
+        builder.CloseElement();
+    };
+}

@@ -1,0 +1,216 @@
+@page "/landlord/create"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Hosting
+@attribute [Authorize(Policy = "LandlordOnly")]
+@inject PremiseService Premises
+@inject IWebHostEnvironment Env
+@inject AuthenticationStateProvider Auth
+@inject NavigationManager Navigation
+
+<PageTitle>Новое объявление — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Разместить объявление</h1>
+        <p class="subtitle">Заполните характеристики помещения</p>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_error))
+{
+    <div class="alert alert-error">@_error</div>
+}
+
+<div class="card" style="max-width:760px;">
+    <EditForm Model="Form" OnValidSubmit="SaveAsync">
+        <DataAnnotationsValidator />
+
+        <div class="form-group">
+            <label>Название</label>
+            <InputText class="form-control" @bind-Value="Form.Title" placeholder="Например: Светлый офис в центре" />
+            <ValidationMessage For="() => Form.Title" />
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Тип помещения</label>
+                <InputSelect class="form-select" @bind-Value="Form.Type">
+                    @foreach (var t in Enum.GetValues<PremiseType>())
+                    {
+                        <option value="@t">@t.Ru()</option>
+                    }
+                </InputSelect>
+            </div>
+            <div class="form-group">
+                <label>Адрес</label>
+                <InputText class="form-control" @bind-Value="Form.Address" placeholder="г. Минск, ул. ..." />
+                <ValidationMessage For="() => Form.Address" />
+            </div>
+        </div>
+
+        <div class="form-row">
+            <div class="form-group">
+                <label>Площадь, м²</label>
+                <InputNumber class="form-control" @bind-Value="Form.Area" />
+                <ValidationMessage For="() => Form.Area" />
+            </div>
+            <div class="form-group">
+                <label>Этаж</label>
+                <InputNumber class="form-control" @bind-Value="Form.Floor" />
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Стоимость аренды, BYN за м² в месяц</label>
+            <InputNumber class="form-control" @bind-Value="Form.PricePerSquareMeter" />
+            <ValidationMessage For="() => Form.PricePerSquareMeter" />
+            @if (Form.Area > 0 && Form.PricePerSquareMeter > 0)
+            {
+                <div class="form-hint">Ориентировочный платёж: <b>@EstimatedMonthly() BYN/мес</b></div>
+            }
+        </div>
+
+        <div class="form-group">
+            <label>Описание</label>
+            <InputTextArea class="form-control" @bind-Value="Form.Description"
+                           placeholder="Особенности, инфраструктура, условия..." />
+        </div>
+
+        <div class="form-group">
+            <label>Фотографии</label>
+            <InputFile OnChange="OnFilesSelected" multiple accept="image/*" class="form-control" />
+            <div class="form-hint">Можно выбрать несколько изображений (до 5 МБ каждое).</div>
+            @if (_photos.Count > 0)
+            {
+                <div class="chips" style="margin-top:.6rem;">
+                    @foreach (var ph in _photos)
+                    {
+                        <span class="badge badge-neutral">@ph.Name</span>
+                    }
+                </div>
+            }
+        </div>
+
+        <div class="toolbar">
+            <button type="submit" class="btn btn-primary" disabled="@_saving">
+                @(_saving ? "Сохранение…" : "Опубликовать")
+            </button>
+            <a class="btn btn-ghost" href="/landlord">Отмена</a>
+        </div>
+    </EditForm>
+</div>
+
+@code {
+    private PremiseForm Form { get; set; } = new();
+
+    private readonly List<(string Name, byte[] Data)> _photos = new();
+    private string? _error;
+    private bool _saving;
+
+    private decimal EstimatedMonthly() => Math.Round((decimal)Form.Area * Form.PricePerSquareMeter, 2);
+
+    private async Task OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        const long maxSize = 5 * 1024 * 1024;
+        _photos.Clear();
+
+        foreach (var file in e.GetMultipleFiles(maximumFileCount: 10))
+        {
+            try
+            {
+                using var ms = new MemoryStream();
+                await file.OpenReadStream(maxSize).CopyToAsync(ms);
+                _photos.Add((file.Name, ms.ToArray()));
+            }
+            catch (Exception)
+            {
+                _error = $"Не удалось загрузить файл «{file.Name}» (возможно, превышен размер 5 МБ).";
+            }
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        _saving = true;
+        try
+        {
+            var state = await Auth.GetAuthenticationStateAsync();
+            var landlordId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(landlordId))
+            {
+                _error = "Не удалось определить пользователя.";
+                return;
+            }
+
+            var savedPaths = await PersistPhotosAsync();
+
+            var premise = new Premise
+            {
+                Title = Form.Title.Trim(),
+                Type = Form.Type,
+                Area = Form.Area,
+                Floor = Form.Floor,
+                PricePerSquareMeter = Form.PricePerSquareMeter,
+                Address = Form.Address.Trim(),
+                Description = Form.Description?.Trim() ?? string.Empty,
+                PhotoPaths = string.Join('\n', savedPaths),
+                Status = PremiseStatus.Available,
+                LandlordId = landlordId
+            };
+
+            var id = await Premises.CreateAsync(premise);
+            Navigation.NavigateTo($"/premise/{id}");
+        }
+        finally
+        {
+            _saving = false;
+        }
+    }
+
+    private async Task<List<string>> PersistPhotosAsync()
+    {
+        var result = new List<string>();
+        if (_photos.Count == 0) return result;
+
+        var webRoot = Env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+        var uploadsDir = Path.Combine(webRoot, "uploads");
+        Directory.CreateDirectory(uploadsDir);
+
+        foreach (var (name, data) in _photos)
+        {
+            var ext = Path.GetExtension(name);
+            if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+            var fileName = $"{Guid.NewGuid():N}{ext}";
+            var fullPath = Path.Combine(uploadsDir, fileName);
+            await File.WriteAllBytesAsync(fullPath, data);
+            result.Add($"/uploads/{fileName}");
+        }
+        return result;
+    }
+
+    public class PremiseForm
+    {
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Укажите название")]
+        [System.ComponentModel.DataAnnotations.StringLength(150)]
+        public string Title { get; set; } = string.Empty;
+
+        public PremiseType Type { get; set; } = PremiseType.Office;
+
+        [System.ComponentModel.DataAnnotations.Range(1, 1_000_000, ErrorMessage = "Площадь должна быть больше нуля")]
+        public double Area { get; set; }
+
+        public int Floor { get; set; } = 1;
+
+        [System.ComponentModel.DataAnnotations.Range(0.01, 1_000_000, ErrorMessage = "Укажите цену за м²")]
+        public decimal PricePerSquareMeter { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Укажите адрес")]
+        [System.ComponentModel.DataAnnotations.StringLength(300)]
+        public string Address { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.StringLength(4000)]
+        public string? Description { get; set; }
+    }
+}

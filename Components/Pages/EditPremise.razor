@@ -1,0 +1,264 @@
+@page "/landlord/edit/{Id:int}"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Hosting
+@attribute [Authorize(Policy = "LandlordOnly")]
+@inject PremiseService Premises
+@inject IWebHostEnvironment Env
+@inject AuthenticationStateProvider Auth
+@inject NavigationManager Navigation
+
+<PageTitle>Редактирование помещения — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Редактирование помещения</h1>
+        <p class="subtitle">Изменение характеристик объявления</p>
+    </div>
+</div>
+
+@if (_loading)
+{
+    <div class="loading"><p>Загрузка…</p></div>
+}
+else if (_notFound)
+{
+    <div class="empty-state">
+        <div class="big">🔍</div>
+        <p>Помещение не найдено или у вас нет к нему доступа.</p>
+        <a class="btn btn-primary" href="/landlord">К моим помещениям</a>
+    </div>
+}
+else
+{
+    @if (_removedByAdmin)
+    {
+        <div class="alert alert-error">
+            Объявление снято администратором@(string.IsNullOrWhiteSpace(_removalReason) ? "." : $": {_removalReason}").
+            После сохранения изменений администратор увидит, что объявление изменено, и сможет вернуть его на площадку.
+        </div>
+    }
+
+    @if (!string.IsNullOrEmpty(_error))
+    {
+        <div class="alert @(_isError ? "alert-error" : "alert-success")">@_error</div>
+    }
+
+    <div class="card" style="max-width:760px;">
+        <EditForm Model="Form" OnValidSubmit="SaveAsync">
+            <DataAnnotationsValidator />
+
+            <div class="form-group">
+                <label>Название</label>
+                <InputText class="form-control" @bind-Value="Form.Title" />
+                <ValidationMessage For="() => Form.Title" />
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Тип помещения</label>
+                    <InputSelect class="form-select" @bind-Value="Form.Type">
+                        @foreach (var t in Enum.GetValues<PremiseType>())
+                        {
+                            <option value="@t">@t.Ru()</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div class="form-group">
+                    <label>Адрес</label>
+                    <InputText class="form-control" @bind-Value="Form.Address" />
+                    <ValidationMessage For="() => Form.Address" />
+                </div>
+            </div>
+
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Площадь, м²</label>
+                    <InputNumber class="form-control" @bind-Value="Form.Area" />
+                    <ValidationMessage For="() => Form.Area" />
+                </div>
+                <div class="form-group">
+                    <label>Этаж</label>
+                    <InputNumber class="form-control" @bind-Value="Form.Floor" />
+                </div>
+            </div>
+
+            <div class="form-group">
+                <label>Стоимость аренды, BYN за м² в месяц</label>
+                <InputNumber class="form-control" @bind-Value="Form.PricePerSquareMeter" />
+                <ValidationMessage For="() => Form.PricePerSquareMeter" />
+                @if (Form.Area > 0 && Form.PricePerSquareMeter > 0)
+                {
+                    <div class="form-hint">Ориентировочный платёж: <b>@EstimatedMonthly() BYN/мес</b></div>
+                }
+            </div>
+
+            <div class="form-group">
+                <label>Описание</label>
+                <InputTextArea class="form-control" @bind-Value="Form.Description" />
+            </div>
+
+            <div class="form-group">
+                <label>Фотографии</label>
+                <div class="form-hint">Сейчас загружено фото: @_existingPhotoCount. Чтобы заменить их, выберите новые файлы (до 5 МБ каждое).</div>
+                <InputFile OnChange="OnFilesSelected" multiple accept="image/*" class="form-control" />
+                @if (_photos.Count > 0)
+                {
+                    <div class="chips" style="margin-top:.6rem;">
+                        @foreach (var ph in _photos)
+                        {
+                            <span class="badge badge-neutral">@ph.Name</span>
+                        }
+                    </div>
+                }
+            </div>
+
+            <div class="toolbar">
+                <button type="submit" class="btn btn-primary" disabled="@_saving">
+                    @(_saving ? "Сохранение…" : "Сохранить изменения")
+                </button>
+                <a class="btn btn-ghost" href="/landlord">Отмена</a>
+            </div>
+        </EditForm>
+    </div>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private PremiseForm Form { get; set; } = new();
+    private readonly List<(string Name, byte[] Data)> _photos = new();
+
+    private bool _loading = true;
+    private bool _notFound;
+    private bool _removedByAdmin;
+    private string? _removalReason;
+    private int _existingPhotoCount;
+    private string _landlordId = "";
+    private string? _error;
+    private bool _isError;
+    private bool _saving;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _landlordId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+
+        var premise = await Premises.GetByIdAsync(Id);
+        if (premise is null || premise.LandlordId != _landlordId)
+        {
+            _notFound = true;
+            _loading = false;
+            return;
+        }
+
+        Form = new PremiseForm
+        {
+            Title = premise.Title,
+            Type = premise.Type,
+            Area = premise.Area,
+            Floor = premise.Floor,
+            PricePerSquareMeter = premise.PricePerSquareMeter,
+            Address = premise.Address,
+            Description = premise.Description
+        };
+        _existingPhotoCount = premise.Photos.Count();
+        _removedByAdmin = premise.IsRemovedByAdmin;
+        _removalReason = premise.AdminRemovalReason;
+        _loading = false;
+    }
+
+    private decimal EstimatedMonthly() => Math.Round((decimal)Form.Area * Form.PricePerSquareMeter, 2);
+
+    private async Task OnFilesSelected(InputFileChangeEventArgs e)
+    {
+        _error = null;
+        const long maxSize = 5 * 1024 * 1024;
+        _photos.Clear();
+
+        foreach (var file in e.GetMultipleFiles(maximumFileCount: 10))
+        {
+            try
+            {
+                using var ms = new MemoryStream();
+                await file.OpenReadStream(maxSize).CopyToAsync(ms);
+                _photos.Add((file.Name, ms.ToArray()));
+            }
+            catch (Exception)
+            {
+                _isError = true;
+                _error = $"Не удалось загрузить файл «{file.Name}» (возможно, превышен размер 5 МБ).";
+            }
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        _error = null;
+        _saving = true;
+        try
+        {
+            string? newPhotoPaths = null;
+            if (_photos.Count > 0)
+            {
+                var saved = await PersistPhotosAsync();
+                newPhotoPaths = string.Join('\n', saved);
+            }
+
+            var edit = new PremiseService.PremiseEdit(
+                Form.Title, Form.Type, Form.Area, Form.Floor,
+                Form.PricePerSquareMeter, Form.Address, Form.Description ?? string.Empty, newPhotoPaths);
+
+            var result = await Premises.UpdateAsync(Id, _landlordId, edit);
+            if (result.Success)
+            {
+                Navigation.NavigateTo($"/premise/{Id}");
+                return;
+            }
+            _isError = true;
+            _error = result.Error;
+        }
+        finally { _saving = false; }
+    }
+
+    private async Task<List<string>> PersistPhotosAsync()
+    {
+        var result = new List<string>();
+        var webRoot = Env.WebRootPath ?? Path.Combine(Directory.GetCurrentDirectory(), "wwwroot");
+        var uploadsDir = Path.Combine(webRoot, "uploads");
+        Directory.CreateDirectory(uploadsDir);
+
+        foreach (var (name, data) in _photos)
+        {
+            var ext = Path.GetExtension(name);
+            if (string.IsNullOrWhiteSpace(ext)) ext = ".jpg";
+            var fileName = $"{Guid.NewGuid():N}{ext}";
+            await File.WriteAllBytesAsync(Path.Combine(uploadsDir, fileName), data);
+            result.Add($"/uploads/{fileName}");
+        }
+        return result;
+    }
+
+    public class PremiseForm
+    {
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Укажите название")]
+        [System.ComponentModel.DataAnnotations.StringLength(150)]
+        public string Title { get; set; } = string.Empty;
+
+        public PremiseType Type { get; set; } = PremiseType.Office;
+
+        [System.ComponentModel.DataAnnotations.Range(1, 1_000_000, ErrorMessage = "Площадь должна быть больше нуля")]
+        public double Area { get; set; }
+
+        public int Floor { get; set; } = 1;
+
+        [System.ComponentModel.DataAnnotations.Range(0.01, 1_000_000, ErrorMessage = "Укажите цену за м²")]
+        public decimal PricePerSquareMeter { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Укажите адрес")]
+        [System.ComponentModel.DataAnnotations.StringLength(300)]
+        public string Address { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.StringLength(4000)]
+        public string? Description { get; set; }
+    }
+}

@@ -1,0 +1,170 @@
+@page "/landlord"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "LandlordOnly")]
+@inject PremiseService Premises
+@inject ContractService Contracts
+@inject InvoiceService Invoices
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>Мои помещения — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Мои помещения</h1>
+        <p class="subtitle">Управление объектами, статусами и отчётами</p>
+    </div>
+    <div class="toolbar">
+        <a class="btn btn-primary" href="/landlord/create">➕ Новое объявление</a>
+    </div>
+</div>
+
+<div class="stats-grid grid" style="margin-bottom:1.5rem;">
+    <div class="stat">
+        <div class="label">Всего помещений</div>
+        <div class="value">@_premises.Count</div>
+    </div>
+    <div class="stat">
+        <div class="label">Действующих договоров</div>
+        <div class="value accent">@_activeContracts</div>
+    </div>
+    <div class="stat">
+        <div class="label">Задолженность по счетам</div>
+        <div class="value">@_outstanding.ToString("0.00") BYN</div>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <h3 class="card-title">Отчёты (Word .docx)</h3>
+    <div class="toolbar">
+        <a class="btn btn-outline" href="/reports/financial" target="_blank">📊 Финансовый отчёт</a>
+        <a class="btn btn-outline" href="/reports/occupancy" target="_blank">🏢 Отчёт о заполняемости</a>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="alert @(_isError ? "alert-error" : "alert-success")">@_message</div>
+}
+
+@if (_premises.Count == 0)
+{
+    <div class="empty-state">
+        <div class="big">🏢</div>
+        <p>У вас пока нет размещённых помещений.</p>
+        <a class="btn btn-primary" href="/landlord/create">Разместить первое объявление</a>
+    </div>
+}
+else
+{
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Название</th>
+                    <th>Тип</th>
+                    <th>Площадь</th>
+                    <th>Цена, BYN/м²</th>
+                    <th>Статус</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in _premises)
+                {
+                    <tr>
+                        <td>
+                            <a href="@($"/premise/{p.Id}")">@p.Title</a>
+                            @if (p.IsRemovedByAdmin && !string.IsNullOrWhiteSpace(p.AdminRemovalReason))
+                            {
+                                <div class="muted" style="font-size:.78rem; margin-top:.25rem; color:var(--danger);">
+                                    Снято администратором: @p.AdminRemovalReason
+                                </div>
+                                @if (p.EditedAfterRemoval)
+                                {
+                                    <div class="muted" style="font-size:.78rem; margin-top:.15rem;">
+                                        Изменения отправлены администратору на проверку.
+                                    </div>
+                                }
+                            }
+                        </td>
+                        <td>@p.Type.Ru()</td>
+                        <td>@p.Area.ToString("0.#") м²</td>
+                        <td>@p.PricePerSquareMeter.ToString("0.00")</td>
+                        <td>
+                            @if (p.IsRemovedByAdmin)
+                            {
+                                <span class="badge badge-overdue">Снято администратором</span>
+                            }
+                            else
+                            {
+                                <select class="form-select" style="min-width:150px;"
+                                        value="@p.Status"
+                                        @onchange="e => ChangeStatusAsync(p.Id, e.Value?.ToString())">
+                                    @foreach (var s in Enum.GetValues<PremiseStatus>())
+                                    {
+                                        <option value="@s">@s.Ru()</option>
+                                    }
+                                </select>
+                            }
+                        </td>
+                        <td>
+                            <div style="display:flex; gap:.4rem;">
+                                <a class="btn btn-outline btn-sm" href="@($"/landlord/edit/{p.Id}")">Изменить</a>
+                                @if (!p.IsRemovedByAdmin)
+                                {
+                                    <button class="btn btn-danger btn-sm" @onclick="() => DeleteAsync(p.Id)">Удалить</button>
+                                }
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Premise> _premises = new();
+    private int _activeContracts;
+    private decimal _outstanding;
+    private string _landlordId = "";
+
+    private string? _message;
+    private bool _isError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _landlordId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _premises = await Premises.GetByLandlordAsync(_landlordId);
+
+        var contracts = await Contracts.GetContractsForLandlordAsync(_landlordId);
+        var today = DateTime.UtcNow.Date;
+        _activeContracts = contracts.Count(c => c.IsActiveOn(today));
+
+        _outstanding = await Invoices.GetOutstandingForLandlordAsync(_landlordId);
+    }
+
+    private async Task ChangeStatusAsync(int premiseId, string? value)
+    {
+        if (!Enum.TryParse<PremiseStatus>(value, out var status)) return;
+
+        var result = await Premises.ChangeStatusAsync(premiseId, status);
+        _isError = !result.Success;
+        _message = result.Success ? "Статус помещения обновлён." : result.Error;
+        await ReloadAsync();
+    }
+
+    private async Task DeleteAsync(int premiseId)
+    {
+        var result = await Premises.DeleteAsync(premiseId);
+        _isError = !result.Success;
+        _message = result.Success ? "Помещение удалено." : result.Error;
+        await ReloadAsync();
+    }
+}

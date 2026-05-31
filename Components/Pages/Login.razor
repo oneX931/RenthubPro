@@ -1,0 +1,127 @@
+@page "/login"
+@layout EmptyLayout
+@inject SignInManager<ApplicationUser> SignInManager
+@inject UserManager<ApplicationUser> UserManager
+@inject NavigationManager Navigation
+
+<PageTitle>Вход — RentHub Pro</PageTitle>
+
+<div class="auth-wrap">
+    <div class="auth-card">
+        <div class="brand-lg">
+            <span class="logo">R</span>
+            <span>RentHub<span class="accent">Pro</span></span>
+        </div>
+        <h1>Вход в систему</h1>
+        <p class="auth-sub">Введите телефон (или e-mail) и пароль</p>
+
+        @if (!string.IsNullOrEmpty(_error))
+        {
+            <div class="alert alert-error">@_error</div>
+        }
+
+        <EditForm Model="Input" method="post" OnValidSubmit="HandleLogin" FormName="login">
+            <DataAnnotationsValidator />
+
+            <div class="form-group">
+                <label>Телефон или e-mail</label>
+                <InputText class="form-control" @bind-Value="Input.Identifier"
+                           placeholder="+375291234567" autocomplete="username" />
+                <ValidationMessage For="() => Input.Identifier" />
+            </div>
+
+            <div class="form-group">
+                <label>Пароль</label>
+                <InputText type="password" class="form-control" @bind-Value="Input.Password"
+                           placeholder="••••••" autocomplete="current-password" />
+                <ValidationMessage For="() => Input.Password" />
+            </div>
+
+            <label style="display:block; font-weight:600; font-size:.88rem; margin-bottom:.35rem;">Войти как</label>
+            <InputRadioGroup @bind-Value="Input.Role">
+                <div class="role-picker">
+                    <label class="role-option">
+                        <InputRadio Value="@Roles.Tenant" />
+                        <span class="emoji">🔑</span>Арендатор
+                    </label>
+                    <label class="role-option">
+                        <InputRadio Value="@Roles.Landlord" />
+                        <span class="emoji">🏢</span>Арендодатель
+                    </label>
+                    <label class="role-option">
+                        <InputRadio Value="@Roles.Admin" />
+                        <span class="emoji">🛠️</span>Админ
+                    </label>
+                </div>
+            </InputRadioGroup>
+
+            <button type="submit" class="btn btn-primary btn-block">Войти</button>
+        </EditForm>
+
+        <p class="auth-switch">Нет аккаунта? <a href="/register">Зарегистрироваться</a></p>
+    </div>
+</div>
+
+@code {
+    [SupplyParameterFromForm] private LoginModel Input { get; set; } = default!;
+    [SupplyParameterFromQuery(Name = "returnUrl")] private string? ReturnUrl { get; set; }
+
+    private string? _error;
+
+    protected override void OnInitialized() => Input ??= new();
+
+    private async Task HandleLogin()
+    {
+        _error = null;
+        var id = Input.Identifier.Trim();
+
+        ApplicationUser? user = null;
+        if (id.Contains('@'))
+            user = await UserManager.FindByEmailAsync(id);
+
+        user ??= await UserManager.FindByNameAsync(id);
+
+        if (user is null)
+        {
+            var normalized = PhoneNumberValidator.Normalize(id);
+            user = await UserManager.Users.FirstOrDefaultAsync(u => u.PhoneNumber == normalized);
+        }
+
+        if (user is null) { _error = "Пользователь с такими данными не найден."; return; }
+        if (user.IsBlocked)
+        {
+            _error = string.IsNullOrWhiteSpace(user.BlockReason)
+                ? "Учётная запись заблокирована администратором."
+                : $"Учётная запись заблокирована администратором. Причина: {user.BlockReason}";
+            return;
+        }
+
+        if (!await UserManager.IsInRoleAsync(user, Input.Role))
+        {
+            _error = "Выбранная роль не соответствует этой учётной записи.";
+            return;
+        }
+
+        var result = await SignInManager.PasswordSignInAsync(user, Input.Password,
+            isPersistent: true, lockoutOnFailure: false);
+
+        if (!result.Succeeded)
+        {
+            _error = "Неверный пароль.";
+            return;
+        }
+
+        Navigation.NavigateTo(string.IsNullOrWhiteSpace(ReturnUrl) ? "/" : ReturnUrl, forceLoad: true);
+    }
+
+    public class LoginModel
+    {
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Укажите телефон или e-mail")]
+        public string Identifier { get; set; } = string.Empty;
+
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Введите пароль")]
+        public string Password { get; set; } = string.Empty;
+
+        public string Role { get; set; } = Roles.Tenant;
+    }
+}

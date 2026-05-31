@@ -1,0 +1,216 @@
+@page "/landlord/invoices"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "LandlordOnly")]
+@inject InvoiceService InvoiceSvc
+@inject ContractService Contracts
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>Счета — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Счета и задолженности</h1>
+        <p class="subtitle">Выставление счетов и контроль оплат</p>
+    </div>
+</div>
+
+<div class="stats-grid grid" style="margin-bottom:1.5rem;">
+    <div class="stat">
+        <div class="label">Всего счетов</div>
+        <div class="value">@_invoices.Count</div>
+    </div>
+    <div class="stat">
+        <div class="label">Оплачено</div>
+        <div class="value">@_paidTotal.ToString("0.00") BYN</div>
+    </div>
+    <div class="stat">
+        <div class="label">Задолженность</div>
+        <div class="value accent">@_outstanding.ToString("0.00") BYN</div>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="alert @(_isError ? "alert-error" : "alert-success")">@_message</div>
+}
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <h3 class="card-title">Выставить счёт</h3>
+    @if (_contracts.Count == 0)
+    {
+        <p class="muted">Счёт выставляется по подписанному договору. Действующих (подписанных арендатором) договоров пока нет.</p>
+    }
+    else
+    {
+        <div class="form-row">
+            <div class="form-group">
+                <label>Договор</label>
+                <select class="form-select" value="@_contractId" @onchange="OnContractChanged">
+                    <option value="0">— выберите —</option>
+                    @foreach (var c in _contracts)
+                    {
+                        <option value="@c.Id">@(c.Premise?.Title) · @(c.Tenant?.FullName)</option>
+                    }
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Сумма, BYN</label>
+                <input type="number" step="0.01" class="form-control" @bind="_amount" />
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label>Срок оплаты</label>
+                <input type="date" class="form-control" @bind="_dueDate" />
+            </div>
+            <div class="form-group">
+                <label>Назначение платежа</label>
+                <input class="form-control" @bind="_note" placeholder="Аренда за месяц" />
+            </div>
+        </div>
+        <button class="btn btn-primary" @onclick="IssueAsync" disabled="@_busy">Выставить счёт</button>
+    }
+</div>
+
+<h3 style="margin-bottom:.75rem;">История счетов</h3>
+
+@if (_invoices.Count == 0)
+{
+    <div class="empty-state"><div class="big">💳</div><p>Счетов пока нет.</p></div>
+}
+else
+{
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Помещение</th>
+                    <th>Арендатор</th>
+                    <th>Выставлен</th>
+                    <th>Срок</th>
+                    <th>Сумма</th>
+                    <th>Статус</th>
+                    <th>Чек</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var i in _invoices)
+                {
+                    <tr>
+                        <td>@(i.Contract?.Premise?.Title ?? "—")</td>
+                        <td>@(i.Contract?.Tenant?.FullName ?? "—")</td>
+                        <td>@i.IssuedAt.ToString("dd.MM.yyyy")</td>
+                        <td>@i.DueDate.ToString("dd.MM.yyyy")</td>
+                        <td>@i.Amount.ToString("0.00")</td>
+                        <td>@StatusBadge(i.Status)</td>
+                        <td>
+                            @if (!string.IsNullOrEmpty(i.ReceiptPath))
+                            {
+                                <a class="btn btn-ghost btn-sm" href="@i.ReceiptPath" target="_blank">Посмотреть чек</a>
+                            }
+                            else
+                            {
+                                <span class="muted" style="font-size:.8rem;">не приложен</span>
+                            }
+                        </td>
+                        <td>
+                            @if (i.Status != InvoiceStatus.Paid)
+                            {
+                                <button class="btn btn-outline btn-sm" @onclick="() => MarkPaidAsync(i.Id)">Оплачен</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Invoice> _invoices = new();
+    private List<Contract> _contracts = new();
+
+    private int _contractId;
+    private decimal _amount;
+    private DateTime _dueDate = DateTime.Today.AddDays(14);
+    private string _note = "Аренда за месяц";
+
+    private decimal _outstanding;
+    private decimal _paidTotal;
+
+    private string _landlordId = "";
+    private string? _message;
+    private bool _isError;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _landlordId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+
+        await InvoiceSvc.RefreshOverdueAsync();
+        _contracts = (await Contracts.GetContractsForLandlordAsync(_landlordId))
+            .Where(c => c.Status == ContractStatus.Active).ToList();
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _invoices = await InvoiceSvc.GetInvoicesForLandlordAsync(_landlordId);
+        _paidTotal = _invoices.Where(i => i.Status == InvoiceStatus.Paid).Sum(i => i.Amount);
+        _outstanding = await InvoiceSvc.GetOutstandingForLandlordAsync(_landlordId);
+    }
+
+    private void OnContractChanged(ChangeEventArgs e)
+    {
+        _contractId = int.TryParse(e.Value?.ToString(), out var id) ? id : 0;
+        var contract = _contracts.FirstOrDefault(c => c.Id == _contractId);
+        if (contract is not null) _amount = contract.MonthlyAmount;
+    }
+
+    private async Task IssueAsync()
+    {
+        _message = null;
+        if (_contractId == 0) { _isError = true; _message = "Выберите договор."; return; }
+
+        _busy = true;
+        try
+        {
+            var result = await InvoiceSvc.IssueInvoiceAsync(_contractId, _amount, _dueDate, _note);
+            _isError = !result.Success;
+            _message = result.Success ? "Счёт выставлен." : result.Error;
+            if (result.Success)
+            {
+                _contractId = 0;
+                _amount = 0;
+                _note = "Аренда за месяц";
+                _dueDate = DateTime.Today.AddDays(14);
+            }
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task MarkPaidAsync(int invoiceId)
+    {
+        var result = await InvoiceSvc.MarkPaidAsync(invoiceId);
+        _isError = !result.Success;
+        _message = result.Success ? "Счёт отмечен как оплаченный." : result.Error;
+        await ReloadAsync();
+    }
+
+    private static RenderFragment StatusBadge(InvoiceStatus s) => builder =>
+    {
+        var cls = s switch
+        {
+            InvoiceStatus.Paid => "badge badge-paid",
+            InvoiceStatus.Pending => "badge badge-pending",
+            _ => "badge badge-overdue"
+        };
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", cls);
+        builder.AddContent(2, s.Ru());
+        builder.CloseElement();
+    };
+}

@@ -1,0 +1,213 @@
+@page "/chat"
+@rendermode InteractiveServer
+@attribute [Authorize]
+@implements IAsyncDisposable
+@inject ChatService ChatSvc
+@inject UserManager<ApplicationUser> UserManager
+@inject AuthenticationStateProvider Auth
+@inject IJSRuntime JS
+
+<PageTitle>Сообщения — RentHub Pro</PageTitle>
+
+<div class="page-header" style="margin-bottom:1rem;">
+    <div>
+        <h1>Сообщения</h1>
+        <p class="subtitle">Мгновенный обмен сообщениями</p>
+    </div>
+</div>
+
+<div class="chat-layout">
+    <div class="chat-contacts">
+        @if (_contacts.Count == 0)
+        {
+            <div style="padding:1.25rem; color:var(--text-muted); font-size:.9rem;">
+                Пока нет диалогов. Напишите арендодателю со страницы помещения.
+            </div>
+        }
+        else
+        {
+            @foreach (var c in _contacts)
+            {
+                <div class="chat-contact @(c.UserId == _activePeerId ? "active" : "")"
+                     @onclick="() => SelectContactAsync(c.UserId, c.Name)">
+                    <div class="avatar">@Initials(c.Name)</div>
+                    <div class="meta">
+                        <div class="name">@c.Name</div>
+                        <div class="preview">@c.LastMessage</div>
+                    </div>
+                    @if (c.Unread > 0 && c.UserId != _activePeerId)
+                    {
+                        <span class="chat-unread">@c.Unread</span>
+                    }
+                </div>
+            }
+        }
+    </div>
+
+    <div class="chat-panel">
+        @if (_activePeerId is null)
+        {
+            <div class="chat-empty">
+                <div style="text-align:center;">
+                    <div style="font-size:2.5rem;">💬</div>
+                    <p>Выберите диалог, чтобы начать переписку</p>
+                </div>
+            </div>
+        }
+        else
+        {
+            <div class="chat-header">
+                <div class="avatar">@Initials(_activePeerName)</div>
+                <span>@_activePeerName</span>
+            </div>
+
+            <div class="chat-messages" id="chatMessages">
+                @foreach (var m in _messages)
+                {
+                    <div class="chat-bubble @(m.SenderId == _myId ? "mine" : "theirs")">
+                        @m.Text
+                        <span class="time">@m.SentAt.ToLocalTime().ToString("dd.MM HH:mm")</span>
+                    </div>
+                }
+            </div>
+
+            <div class="chat-input">
+                <input class="form-control" placeholder="Введите сообщение…" @bind="_draft"
+                       @bind:event="oninput" @onkeydown="OnKeyDown" />
+                <button class="btn btn-primary" @onclick="SendAsync"
+                        disabled="@string.IsNullOrWhiteSpace(_draft)">Отправить</button>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    private List<ChatContact> _contacts = new();
+    private List<ChatMessage> _messages = new();
+
+    private string _myId = "";
+    private string? _activePeerId;
+    private string _activePeerName = "";
+    private string _draft = "";
+
+    private DotNetObjectReference<Chat>? _selfRef;
+    private bool _started;
+
+    [SupplyParameterFromQuery(Name = "peer")] private string? Peer { get; set; }
+    [SupplyParameterFromQuery(Name = "text")] private string? Text { get; set; }
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _myId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+
+        await ReloadContactsAsync();
+
+        if (!string.IsNullOrEmpty(Peer) && Peer != _myId)
+        {
+            var name = _contacts.FirstOrDefault(c => c.UserId == Peer)?.Name;
+            if (name is null)
+            {
+                var peerUser = await UserManager.FindByIdAsync(Peer);
+                name = peerUser?.FullName ?? "Пользователь";
+            }
+            if (!string.IsNullOrEmpty(Text)) _draft = Text;
+            await SelectContactAsync(Peer, name);
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            _selfRef = DotNetObjectReference.Create(this);
+            _started = await JS.InvokeAsync<bool>("rentHubChat.start", _selfRef);
+        }
+        await JS.InvokeVoidAsync("rentHubScrollBottom", "chatMessages");
+    }
+
+    private async Task ReloadContactsAsync() => _contacts = await ChatSvc.GetContactsAsync(_myId);
+
+    private async Task SelectContactAsync(string peerId, string name)
+    {
+        _activePeerId = peerId;
+        _activePeerName = name;
+
+        _messages = await ChatSvc.GetConversationAsync(_myId, peerId);
+        await ChatSvc.MarkReadAsync(_myId, peerId);
+        await ReloadContactsAsync();
+    }
+
+    private async Task OnKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+            await SendAsync();
+    }
+
+    private async Task SendAsync()
+    {
+        if (_activePeerId is null || string.IsNullOrWhiteSpace(_draft)) return;
+
+        var text = _draft.Trim();
+        _draft = "";
+
+        if (_started)
+        {
+            await JS.InvokeAsync<bool>("rentHubChat.send", _activePeerId, text);
+        }
+        else
+        {
+            var saved = await ChatSvc.SaveAsync(_myId, _activePeerId, text);
+            _messages.Add(saved);
+            await ReloadContactsAsync();
+        }
+    }
+
+    [JSInvokable]
+    public async Task OnMessageReceived(IncomingMessage msg)
+    {
+        var belongsToActive = _activePeerId is not null &&
+            ((msg.SenderId == _myId && msg.RecipientId == _activePeerId) ||
+             (msg.SenderId == _activePeerId && msg.RecipientId == _myId));
+
+        if (belongsToActive)
+        {
+            _messages.Add(new ChatMessage
+            {
+                Id = msg.Id,
+                SenderId = msg.SenderId,
+                RecipientId = msg.RecipientId,
+                Text = msg.Text,
+                SentAt = msg.SentAt
+            });
+
+            if (msg.SenderId == _activePeerId)
+                await ChatSvc.MarkReadAsync(_myId, _activePeerId);
+        }
+
+        await ReloadContactsAsync();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string Initials(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 1 ? parts[0][..1].ToUpper() : (parts[0][..1] + parts[1][..1]).ToUpper();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        try { await JS.InvokeVoidAsync("rentHubChat.stop"); } catch { }
+        _selfRef?.Dispose();
+    }
+
+    public class IncomingMessage
+    {
+        public long Id { get; set; }
+        public string SenderId { get; set; } = "";
+        public string RecipientId { get; set; } = "";
+        public string Text { get; set; } = "";
+        public DateTime SentAt { get; set; }
+    }
+}

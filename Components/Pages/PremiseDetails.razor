@@ -1,0 +1,173 @@
+@page "/premise/{Id:int}"
+@inject PremiseService Premises
+
+<PageTitle>@(_premise?.Title ?? "Помещение") — RentHub Pro</PageTitle>
+
+@if (_notFound)
+{
+    <div class="empty-state">
+        <div class="big">🔍</div>
+        <p>Помещение не найдено.</p>
+        <a class="btn btn-primary" href="/catalog">К каталогу</a>
+    </div>
+}
+else if (_premise is null)
+{
+    <div class="loading"><p>Загрузка…</p></div>
+}
+else
+{
+    <div class="toolbar" style="margin-bottom:1rem;">
+        <a class="btn btn-ghost btn-sm" href="/catalog">← Назад к каталогу</a>
+    </div>
+
+    @if (_premise.IsRemovedByAdmin)
+    {
+        <div class="alert alert-error">
+            Это объявление снято с публикации администратором@(string.IsNullOrWhiteSpace(_premise.AdminRemovalReason) ? "." : $": {_premise.AdminRemovalReason}")
+        </div>
+    }
+
+    <div class="detail-hero" style="@HeroStyle(_premise)">
+        @(_premise.Photos.Any() ? "" : TypeEmoji(_premise.Type))
+    </div>
+
+    <div class="detail-grid">
+        <div>
+            <div class="page-header" style="margin-bottom:1rem;">
+                <div>
+                    <h1>@_premise.Title</h1>
+                    <p class="subtitle">@_premise.Address</p>
+                </div>
+                <div>@StatusBadge(_premise.Status)</div>
+            </div>
+
+            <div class="card">
+                <h3 class="card-title">Описание</h3>
+                <p style="white-space:pre-line; margin:0;">
+                    @(string.IsNullOrWhiteSpace(_premise.Description) ? "Описание не указано." : _premise.Description)
+                </p>
+            </div>
+
+            @if (_premise.Photos.Count() > 1)
+            {
+                <div class="card">
+                    <h3 class="card-title">Фотографии</h3>
+                    <div class="gallery">
+                        @foreach (var photo in _premise.Photos)
+                        {
+                            <img src="@photo" alt="Фото помещения" />
+                        }
+                    </div>
+                </div>
+            }
+        </div>
+
+        <div>
+            <div class="card">
+                <div class="premise-price" style="margin-bottom:1rem;">
+                    @_premise.PricePerSquareMeter.ToString("0.00") BYN <small>/ м² в месяц</small>
+                </div>
+                <div class="kv-list">
+                    <div class="kv"><span class="k">Тип</span><span class="v">@_premise.Type.Ru()</span></div>
+                    <div class="kv"><span class="k">Площадь</span><span class="v">@_premise.Area.ToString("0.#") м²</span></div>
+                    <div class="kv"><span class="k">Этаж</span><span class="v">@_premise.Floor</span></div>
+                    <div class="kv">
+                        <span class="k">Ориентир. платёж</span>
+                        <span class="v">@EstimatedMonthly() BYN/мес</span>
+                    </div>
+                    <div class="kv"><span class="k">Статус</span><span class="v">@_premise.Status.Ru()</span></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h3 class="card-title">Арендодатель</h3>
+                <div class="user-chip" style="border:none; padding:0;">
+                    <div class="avatar">@LandlordInitials()</div>
+                    <div class="meta">
+                        <div class="name">@(_premise.Landlord?.FullName ?? "—")</div>
+                        <div class="role">Собственник</div>
+                    </div>
+                </div>
+
+                <AuthorizeView Roles="Tenant" Context="auth">
+                    @if (!_premise.IsRemovedByAdmin)
+                    {
+                        <div style="margin-top:1rem; display:flex; flex-direction:column; gap:.5rem;">
+                            <a class="btn btn-primary btn-block" href="@_viewingHref">Запросить просмотр</a>
+                            <a class="btn btn-outline btn-block" href="@_chatHref">Написать арендодателю</a>
+                        </div>
+                    }
+                </AuthorizeView>
+
+                <AuthorizeView Context="auth">
+                    <NotAuthorized>
+                        <div style="margin-top:1rem;">
+                            <a class="btn btn-primary btn-block" href="/login">Войдите, чтобы связаться</a>
+                        </div>
+                    </NotAuthorized>
+                </AuthorizeView>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public int Id { get; set; }
+
+    private Premise? _premise;
+    private bool _notFound;
+    private string _chatHref = "/chat";
+    private string _viewingHref = "/chat";
+
+    protected override async Task OnInitializedAsync()
+    {
+        _premise = await Premises.GetByIdAsync(Id);
+        if (_premise is null) { _notFound = true; return; }
+
+        var peer = _premise.LandlordId;
+        var text = Uri.EscapeDataString($"Здравствуйте! Интересует объект «{_premise.Title}». Можно записаться на просмотр?");
+        _chatHref = $"/chat?peer={peer}";
+        _viewingHref = $"/chat?peer={peer}&text={text}";
+    }
+
+    private decimal EstimatedMonthly() =>
+        Math.Round((decimal)_premise!.Area * _premise.PricePerSquareMeter, 2);
+
+    private string LandlordInitials()
+    {
+        var name = _premise?.Landlord?.FullName;
+        if (string.IsNullOrWhiteSpace(name)) return "—";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return parts.Length == 1 ? parts[0][..1].ToUpper() : (parts[0][..1] + parts[1][..1]).ToUpper();
+    }
+
+    private static string HeroStyle(Premise p)
+    {
+        var first = p.Photos.FirstOrDefault();
+        return string.IsNullOrEmpty(first) ? "" : $"background-image:url('{first}')";
+    }
+
+    private static string TypeEmoji(PremiseType t) => t switch
+    {
+        PremiseType.Office => "🏢",
+        PremiseType.Retail => "🛍️",
+        PremiseType.Warehouse => "📦",
+        PremiseType.Industrial => "🏭",
+        _ => "🏚️"
+    };
+
+    private static RenderFragment StatusBadge(PremiseStatus s) => builder =>
+    {
+        var cls = s switch
+        {
+            PremiseStatus.Available => "badge badge-available",
+            PremiseStatus.Rented => "badge badge-rented",
+            _ => "badge badge-repair"
+        };
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", cls);
+        builder.AddContent(2, s.Ru());
+        builder.CloseElement();
+    };
+}

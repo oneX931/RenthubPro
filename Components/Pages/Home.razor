@@ -1,0 +1,126 @@
+@page "/"
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>RentHub Pro — аренда коммерческих помещений</PageTitle>
+
+@if (!_authenticated)
+{
+    <div class="hero">
+        <h1>Аренда коммерческих помещений в Минске</h1>
+        <p>RentHub Pro объединяет арендодателей и арендаторов: каталог объектов, договоры,
+           счёта и мгновенный чат — в одном месте.</p>
+        <a class="btn btn-primary" href="/register">Начать бесплатно</a>
+    </div>
+
+    <div class="grid grid-cards">
+        <div class="card">
+            <h3>🗂️ Удобный каталог</h3>
+            <p class="muted">Фильтрация по площади, типу и цене. Подробные карточки объектов с фотографиями.</p>
+        </div>
+        <div class="card">
+            <h3>📄 Договоры и счёта</h3>
+            <p class="muted">Оформление, продление и расторжение договоров, выставление счетов и контроль задолженностей.</p>
+        </div>
+        <div class="card">
+            <h3>💬 Мгновенный чат</h3>
+            <p class="muted">Прямая связь между арендодателем и арендатором в реальном времени.</p>
+        </div>
+        <div class="card">
+            <h3>📊 Отчёты</h3>
+            <p class="muted">Финансовые отчёты и отчёты о заполняемости с выгрузкой в формате Word (.docx).</p>
+        </div>
+    </div>
+
+    <div class="card" style="margin-top:1.1rem; text-align:center;">
+        <p class="muted" style="margin:0 0 .8rem;">Уже есть аккаунт?</p>
+        <a class="btn btn-outline" href="/login">Войти в систему</a>
+        <a class="btn btn-ghost" href="/catalog">Смотреть каталог</a>
+    </div>
+}
+else
+{
+    <div class="page-header">
+        <div>
+            <h1>Добро пожаловать, @_displayName!</h1>
+            <p class="subtitle">@_roleRu · быстрый доступ к разделам системы</p>
+        </div>
+    </div>
+
+    @if (_isLandlord)
+    {
+        <div class="grid grid-cards">
+            <a class="card" href="/landlord" style="text-decoration:none; color:inherit;">
+                <h3>📊 Мои помещения</h3>
+                <p class="muted">Управление объявлениями, статусами и отчётами.</p>
+            </a>
+            <a class="card" href="/landlord/create" style="text-decoration:none; color:inherit;">
+                <h3>➕ Разместить объявление</h3>
+                <p class="muted">Добавить новое помещение в каталог.</p>
+            </a>
+            <a class="card" href="/landlord/contracts" style="text-decoration:none; color:inherit;">
+                <h3>📄 Договоры</h3>
+                <p class="muted">Оформление, продление и расторжение договоров аренды.</p>
+            </a>
+            <a class="card" href="/landlord/invoices" style="text-decoration:none; color:inherit;">
+                <h3>💳 Счета</h3>
+                <p class="muted">Выставление счетов и контроль задолженностей.</p>
+            </a>
+        </div>
+    }
+    else if (_isTenant)
+    {
+        <div class="grid grid-cards">
+            <a class="card" href="/catalog" style="text-decoration:none; color:inherit;">
+                <h3>🗂️ Каталог помещений</h3>
+                <p class="muted">Подобрать помещение под ваши задачи.</p>
+            </a>
+            <a class="card" href="/tenant/contracts" style="text-decoration:none; color:inherit;">
+                <h3>📄 Мои договоры</h3>
+                <p class="muted">Просмотр действующих и завершённых договоров.</p>
+            </a>
+            <a class="card" href="/tenant/invoices" style="text-decoration:none; color:inherit;">
+                <h3>💳 Мои счета</h3>
+                <p class="muted">История платежей и скачивание счетов.</p>
+            </a>
+            <a class="card" href="/chat" style="text-decoration:none; color:inherit;">
+                <h3>💬 Сообщения</h3>
+                <p class="muted">Связь с арендодателями.</p>
+            </a>
+        </div>
+    }
+    else
+    {
+        <div class="card">
+            <p>Вы вошли как администратор. Перейдите в <a href="/admin">панель администратора</a>
+               для управления пользователями и просмотра статистики.</p>
+        </div>
+    }
+}
+
+@code {
+    private bool _authenticated;
+    private bool _isLandlord;
+    private bool _isTenant;
+    private string _displayName = "";
+    private string _roleRu = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        var user = state.User;
+        _authenticated = user.Identity?.IsAuthenticated == true;
+        if (!_authenticated) return;
+
+        _isLandlord = user.IsInRole(Roles.Landlord);
+        _isTenant = user.IsInRole(Roles.Tenant);
+
+        _displayName = user.FindFirst("FullName")?.Value is { Length: > 0 } fullName
+            ? fullName
+            : (user.Identity?.Name ?? "");
+
+        _roleRu = user.IsInRole(Roles.Admin) ? "Администратор"
+            : _isLandlord ? "Арендодатель"
+            : _isTenant ? "Арендатор"
+            : "Пользователь";
+    }
+}

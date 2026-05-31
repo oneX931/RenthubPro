@@ -1,0 +1,127 @@
+@page "/catalog"
+@rendermode InteractiveServer
+@inject PremiseService Premises
+
+<PageTitle>Каталог помещений — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Каталог помещений</h1>
+        <p class="subtitle">Найдено объектов: @(_items?.Count ?? 0)</p>
+    </div>
+</div>
+
+<div class="card" style="margin-bottom:1.25rem;">
+    <div class="filters">
+        <div>
+            <label class="muted" style="font-size:.82rem;">Тип</label>
+            <select class="form-select" @bind="_type">
+                <option value="">Любой</option>
+                @foreach (var t in Enum.GetValues<PremiseType>())
+                {
+                    <option value="@t">@t.Ru()</option>
+                }
+            </select>
+        </div>
+        <div>
+            <label class="muted" style="font-size:.82rem;">Площадь от, м²</label>
+            <input class="form-control" type="number" min="0" @bind="_minArea" />
+        </div>
+        <div>
+            <label class="muted" style="font-size:.82rem;">Площадь до, м²</label>
+            <input class="form-control" type="number" min="0" @bind="_maxArea" />
+        </div>
+        <div>
+            <label class="muted" style="font-size:.82rem;">Цена от, BYN/м²</label>
+            <input class="form-control" type="number" min="0" @bind="_minPrice" />
+        </div>
+        <div>
+            <label class="muted" style="font-size:.82rem;">Цена до, BYN/м²</label>
+            <input class="form-control" type="number" min="0" @bind="_maxPrice" />
+        </div>
+        <div class="toolbar">
+            <button class="btn btn-primary" @onclick="ApplyAsync">Показать</button>
+            <button class="btn btn-ghost" @onclick="ResetAsync">Сбросить</button>
+        </div>
+    </div>
+</div>
+
+@if (_items is null)
+{
+    <div class="loading"><p>Загрузка каталога…</p></div>
+}
+else if (_items.Count == 0)
+{
+    <div class="empty-state">
+        <div class="big">🗂️</div>
+        <p>По заданным условиям помещений не найдено.</p>
+    </div>
+}
+else
+{
+    <div class="grid grid-cards">
+        @foreach (var p in _items)
+        {
+            <a class="premise-card" href="@($"/premise/{p.Id}")">
+                <div class="premise-photo" style="@PhotoStyle(p)">
+                    @(p.Photos.Any() ? "" : TypeEmoji(p.Type))
+                </div>
+                <div class="premise-body">
+                    <h3>@p.Title</h3>
+                    <div class="premise-meta">
+                        <span>@p.Type.Ru()</span>
+                        <span>@p.Area.ToString("0.#") м²</span>
+                        <span>@(p.Floor) этаж</span>
+                    </div>
+                    <div class="muted" style="font-size:.85rem;">@p.Address</div>
+                    <div class="premise-price">
+                        @p.PricePerSquareMeter.ToString("0.00") BYN <small>/ м² в месяц</small>
+                    </div>
+                </div>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    private List<Premise>? _items;
+
+    private string _type = "";
+    private double? _minArea, _maxArea;
+    private decimal? _minPrice, _maxPrice;
+
+    protected override async Task OnInitializedAsync() => await ApplyAsync();
+
+    private async Task ApplyAsync()
+    {
+        PremiseType? type = string.IsNullOrEmpty(_type) ? null : Enum.Parse<PremiseType>(_type);
+        var filter = new PremiseService.CatalogFilter(
+            MinArea: _minArea, MaxArea: _maxArea,
+            MinPrice: _minPrice, MaxPrice: _maxPrice,
+            Type: type, OnlyAvailable: true);
+        _items = await Premises.GetCatalogAsync(filter);
+    }
+
+    private async Task ResetAsync()
+    {
+        _type = "";
+        _minArea = _maxArea = null;
+        _minPrice = _maxPrice = null;
+        await ApplyAsync();
+    }
+
+    private static string PhotoStyle(Premise p)
+    {
+        var first = p.Photos.FirstOrDefault();
+        return string.IsNullOrEmpty(first) ? "" : $"background-image:url('{first}')";
+    }
+
+    private static string TypeEmoji(PremiseType t) => t switch
+    {
+        PremiseType.Office => "🏢",
+        PremiseType.Retail => "🛍️",
+        PremiseType.Warehouse => "📦",
+        PremiseType.Industrial => "🏭",
+        _ => "🏚️"
+    };
+}

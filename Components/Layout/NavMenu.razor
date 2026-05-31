@@ -1,0 +1,79 @@
+@inject AuthenticationStateProvider AuthProvider
+
+<aside class="sidebar">
+    <div class="brand">
+        <span class="logo">R</span>
+        <span>RentHub<span class="accent">Pro</span></span>
+    </div>
+
+    <nav class="nav">
+        <AuthorizeView Roles="Admin">
+            <div class="nav-section-title">Администрирование</div>
+            <NavLink href="/admin" Match="NavLinkMatch.All">
+                <span class="ico">🛠️</span> Панель администратора
+            </NavLink>
+        </AuthorizeView>
+
+        <AuthorizeView Roles="Landlord,Tenant">
+            <div class="nav-section-title">Основное</div>
+            <NavLink href="/" Match="NavLinkMatch.All"><span class="ico">🏠</span> Главная</NavLink>
+            <NavLink href="/catalog"><span class="ico">🗂️</span> Каталог помещений</NavLink>
+            <NavLink href="/chat"><span class="ico">💬</span> Сообщения</NavLink>
+            <NavLink href="/profile"><span class="ico">👤</span> Профиль</NavLink>
+        </AuthorizeView>
+
+        <AuthorizeView Roles="Landlord">
+            <div class="nav-section-title">Арендодателю</div>
+            <NavLink href="/landlord" Match="NavLinkMatch.All"><span class="ico">📊</span> Мои помещения</NavLink>
+            <NavLink href="/landlord/create"><span class="ico">➕</span> Разместить объявление</NavLink>
+            <NavLink href="/landlord/contracts"><span class="ico">📄</span> Договоры</NavLink>
+            <NavLink href="/landlord/invoices"><span class="ico">💳</span> Счета и задолженности</NavLink>
+        </AuthorizeView>
+
+        <AuthorizeView Roles="Tenant">
+            <div class="nav-section-title">Арендатору</div>
+            <NavLink href="/tenant/contracts"><span class="ico">📄</span> Мои договоры</NavLink>
+            <NavLink href="/tenant/invoices"><span class="ico">💳</span> Мои счета</NavLink>
+        </AuthorizeView>
+    </nav>
+
+    <div class="user-chip">
+        <div class="avatar">@_initials</div>
+        <div class="meta">
+            <div class="name">@_name</div>
+            <div class="role">@_roleRu</div>
+        </div>
+    </div>
+</aside>
+
+@code {
+    private string _name = "Пользователь";
+    private string _roleRu = "";
+    private string _initials = "?";
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await AuthProvider.GetAuthenticationStateAsync();
+        var user = state.User;
+        if (user.Identity?.IsAuthenticated != true) return;
+
+        _name = user.FindFirst("FullName")?.Value is { Length: > 0 } fullName
+            ? fullName
+            : (user.Identity?.Name ?? "Пользователь");
+
+        _roleRu = user.IsInRole(Roles.Admin) ? "Администратор"
+            : user.IsInRole(Roles.Landlord) ? "Арендодатель"
+            : user.IsInRole(Roles.Tenant) ? "Арендатор"
+            : "—";
+
+        _initials = BuildInitials(_name);
+    }
+
+    private static string BuildInitials(string name)
+    {
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "?";
+        if (parts.Length == 1) return parts[0][..1].ToUpper();
+        return (parts[0][..1] + parts[1][..1]).ToUpper();
+    }
+}

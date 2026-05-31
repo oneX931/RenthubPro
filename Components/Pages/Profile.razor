@@ -1,0 +1,204 @@
+@page "/profile"
+@attribute [Authorize]
+@inject UserManager<ApplicationUser> UserManager
+@inject SignInManager<ApplicationUser> SignInManager
+@inject AuthenticationStateProvider Auth
+@inject NavigationManager Navigation
+
+<PageTitle>Профиль — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Профиль</h1>
+        <p class="subtitle">@_roleRu</p>
+    </div>
+</div>
+
+@if (_user is null)
+{
+    <div class="loading"><p>Загрузка…</p></div>
+}
+else if (_isAdmin)
+{
+    <div class="card" style="max-width:620px;">
+        <h3 class="card-title">Учётная запись администратора</h3>
+        <p class="muted">Профиль администратора не редактируется. Управление системой доступно в панели.</p>
+        <a class="btn btn-primary" href="/admin">Перейти в панель администратора</a>
+    </div>
+
+    <div class="card" style="max-width:620px;">
+        <h3 class="card-title">Оформление</h3>
+        <button class="btn btn-outline" type="button" onclick="rentHubTheme.toggle()">🌓 Переключить тему</button>
+    </div>
+}
+else
+{
+    <div class="card" style="max-width:620px;">
+        <h3 class="card-title">Личные данные</h3>
+
+        @if (!string.IsNullOrEmpty(_profileMsg))
+        {
+            <div class="alert @(_profileErr ? "alert-error" : "alert-success")">@_profileMsg</div>
+        }
+
+        <EditForm Model="ProfileInput" FormName="profile" method="post" OnValidSubmit="SaveProfileAsync">
+            <DataAnnotationsValidator />
+            <div class="form-group">
+                <label>Полное имя</label>
+                <InputText class="form-control" @bind-Value="ProfileInput!.FullName" />
+                <ValidationMessage For="() => ProfileInput!.FullName" />
+            </div>
+            <div class="form-group">
+                <label>Телефон (формат +375)</label>
+                <InputText class="form-control" @bind-Value="ProfileInput!.Phone" />
+            </div>
+            <div class="form-group">
+                <label>E-mail</label>
+                <InputText class="form-control" @bind-Value="ProfileInput!.Email" />
+            </div>
+            <button class="btn btn-primary" type="submit">Сохранить</button>
+        </EditForm>
+    </div>
+
+    <div class="card" style="max-width:620px;">
+        <h3 class="card-title">Смена пароля</h3>
+
+        @if (!string.IsNullOrEmpty(_pwMsg))
+        {
+            <div class="alert @(_pwErr ? "alert-error" : "alert-success")">@_pwMsg</div>
+        }
+
+        <EditForm Model="PasswordInput" FormName="password" method="post" OnValidSubmit="ChangePasswordAsync">
+            <DataAnnotationsValidator />
+            <div class="form-group">
+                <label>Текущий пароль</label>
+                <InputText type="password" class="form-control" @bind-Value="PasswordInput!.CurrentPassword" />
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Новый пароль</label>
+                    <InputText type="password" class="form-control" @bind-Value="PasswordInput!.NewPassword" />
+                </div>
+                <div class="form-group">
+                    <label>Повторите новый пароль</label>
+                    <InputText type="password" class="form-control" @bind-Value="PasswordInput!.ConfirmPassword" />
+                </div>
+            </div>
+            <button class="btn btn-primary" type="submit">Изменить пароль</button>
+        </EditForm>
+    </div>
+
+    <div class="card" style="max-width:620px;">
+        <h3 class="card-title">Оформление</h3>
+        <button class="btn btn-outline" type="button" onclick="rentHubTheme.toggle()">🌓 Переключить тему</button>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromForm(FormName = "profile")] private ProfileModel? ProfileInput { get; set; }
+    [SupplyParameterFromForm(FormName = "password")] private PasswordModel? PasswordInput { get; set; }
+    [SupplyParameterFromQuery(Name = "updated")] private string? Updated { get; set; }
+    [SupplyParameterFromQuery(Name = "pw")] private string? PwChanged { get; set; }
+
+    private ApplicationUser? _user;
+    private bool _isAdmin;
+    private string _roleRu = "";
+
+    private string? _profileMsg;
+    private bool _profileErr;
+    private string? _pwMsg;
+    private bool _pwErr;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _user = await UserManager.GetUserAsync(state.User);
+        if (_user is null) return;
+
+        var roles = await UserManager.GetRolesAsync(_user);
+        _isAdmin = roles.Contains(Roles.Admin);
+        _roleRu = roles.FirstOrDefault() switch
+        {
+            Roles.Admin => "Администратор",
+            Roles.Landlord => "Арендодатель",
+            Roles.Tenant => "Арендатор",
+            _ => "Пользователь"
+        };
+
+        ProfileInput ??= new ProfileModel
+        {
+            FullName = _user.FullName,
+            Phone = _user.PhoneNumber ?? "",
+            Email = _user.Email
+        };
+        PasswordInput ??= new PasswordModel();
+
+        if (Updated == "1") { _profileErr = false; _profileMsg = "Данные сохранены."; }
+        if (PwChanged == "1") { _pwErr = false; _pwMsg = "Пароль изменён."; }
+    }
+
+    private async Task SaveProfileAsync()
+    {
+        if (_user is null || ProfileInput is null) return;
+
+        var phone = PhoneNumberValidator.Normalize(ProfileInput.Phone);
+        if (!PhoneNumberValidator.IsValid(phone))
+        {
+            _profileErr = true;
+            _profileMsg = "Телефон должен быть в формате +375 (например, +375291234567).";
+            return;
+        }
+
+        _user.FullName = ProfileInput.FullName.Trim();
+        _user.PhoneNumber = phone;
+        _user.Email = string.IsNullOrWhiteSpace(ProfileInput.Email) ? null : ProfileInput.Email.Trim();
+
+        var result = await UserManager.UpdateAsync(_user);
+        if (!result.Succeeded)
+        {
+            _profileErr = true;
+            _profileMsg = string.Join(" ", result.Errors.Select(e => e.Description));
+            return;
+        }
+
+        await SignInManager.RefreshSignInAsync(_user);
+        Navigation.NavigateTo("/profile?updated=1");
+    }
+
+    private async Task ChangePasswordAsync()
+    {
+        if (_user is null || PasswordInput is null) return;
+
+        if (PasswordInput.NewPassword.Length < 6) { _pwErr = true; _pwMsg = "Новый пароль слишком короткий (минимум 6 символов)."; return; }
+        if (PasswordInput.NewPassword != PasswordInput.ConfirmPassword) { _pwErr = true; _pwMsg = "Новые пароли не совпадают."; return; }
+
+        var result = await UserManager.ChangePasswordAsync(_user, PasswordInput.CurrentPassword, PasswordInput.NewPassword);
+        if (!result.Succeeded)
+        {
+            _pwErr = true;
+            _pwMsg = string.Join(" ", result.Errors.Select(e => e.Description));
+            return;
+        }
+
+        await SignInManager.RefreshSignInAsync(_user);
+        Navigation.NavigateTo("/profile?pw=1");
+    }
+
+    public class ProfileModel
+    {
+        [System.ComponentModel.DataAnnotations.Required(ErrorMessage = "Укажите имя")]
+        [System.ComponentModel.DataAnnotations.StringLength(150)]
+        public string FullName { get; set; } = string.Empty;
+
+        public string Phone { get; set; } = string.Empty;
+
+        public string? Email { get; set; }
+    }
+
+    public class PasswordModel
+    {
+        public string CurrentPassword { get; set; } = string.Empty;
+        public string NewPassword { get; set; } = string.Empty;
+        public string ConfirmPassword { get; set; } = string.Empty;
+    }
+}

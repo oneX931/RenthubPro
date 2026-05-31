@@ -1,0 +1,234 @@
+@page "/landlord/contracts"
+@rendermode InteractiveServer
+@attribute [Authorize(Policy = "LandlordOnly")]
+@inject ContractService ContractSvc
+@inject PremiseService Premises
+@inject UserManager<ApplicationUser> UserManager
+@inject AuthenticationStateProvider Auth
+
+<PageTitle>Договоры — RentHub Pro</PageTitle>
+
+<div class="page-header">
+    <div>
+        <h1>Договоры аренды</h1>
+        <p class="subtitle">Оформление, продление и расторжение</p>
+    </div>
+</div>
+
+@if (!string.IsNullOrEmpty(_message))
+{
+    <div class="alert @(_isError ? "alert-error" : "alert-success")">@_message</div>
+}
+
+<div class="card" style="margin-bottom:1.5rem;">
+    <h3 class="card-title">Новый договор</h3>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Помещение</label>
+            <select class="form-select" value="@_premiseId" @onchange="OnPremiseChanged">
+                <option value="0">— выберите —</option>
+                @foreach (var p in _premises)
+                {
+                    <option value="@p.Id">@p.Title (@p.Status.Ru())</option>
+                }
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Арендатор</label>
+            <select class="form-select" @bind="_tenantId">
+                <option value="">— выберите —</option>
+                @foreach (var t in _tenants)
+                {
+                    <option value="@t.Id">@t.FullName (@t.PhoneNumber)</option>
+                }
+            </select>
+        </div>
+    </div>
+
+    <div class="form-row">
+        <div class="form-group">
+            <label>Дата начала</label>
+            <input type="date" class="form-control" @bind="_start" />
+        </div>
+        <div class="form-group">
+            <label>Дата окончания</label>
+            <input type="date" class="form-control" @bind="_end" />
+        </div>
+    </div>
+
+    <div class="form-group" style="max-width:340px;">
+        <label>Ежемесячный платёж, BYN</label>
+        <input type="number" step="0.01" class="form-control" @bind="_amount" />
+        <div class="form-hint">Рассчитано автоматически (площадь × цена). Можно скорректировать.</div>
+    </div>
+
+    <button class="btn btn-primary" @onclick="CreateAsync" disabled="@_busy">Оформить договор</button>
+</div>
+
+<h3 style="margin-bottom:.75rem;">Действующие и прошлые договоры</h3>
+
+@if (_contracts.Count == 0)
+{
+    <div class="empty-state"><div class="big">📄</div><p>Договоров пока нет.</p></div>
+}
+else
+{
+    <div class="table-wrap">
+        <table class="data">
+            <thead>
+                <tr>
+                    <th>Помещение</th>
+                    <th>Арендатор</th>
+                    <th>Период</th>
+                    <th>Платёж</th>
+                    <th>Статус</th>
+                    <th>Продление</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var c in _contracts)
+                {
+                    <tr>
+                        <td>@(c.Premise?.Title ?? "—")</td>
+                        <td>@(c.Tenant?.FullName ?? "—")</td>
+                        <td>@c.StartDate.ToString("dd.MM.yyyy") — @c.EndDate.ToString("dd.MM.yyyy")</td>
+                        <td>@c.MonthlyAmount.ToString("0.00")</td>
+                        <td>@StatusBadge(c)</td>
+                        <td>
+                            @if (c.Status != ContractStatus.Terminated)
+                            {
+                                <div style="display:flex; gap:.4rem; align-items:center;">
+                                    <input type="date" class="form-control" style="padding:.35rem .5rem;"
+                                           value="@GetExtendDate(c).ToString("yyyy-MM-dd")"
+                                           @onchange="e => SetExtendDate(c.Id, e.Value?.ToString())" />
+                                    <button class="btn btn-ghost btn-sm" @onclick="() => ExtendAsync(c.Id)">↪</button>
+                                </div>
+                            }
+                        </td>
+                        <td>
+                            @if (c.Status != ContractStatus.Terminated)
+                            {
+                                <button class="btn btn-danger btn-sm" @onclick="() => TerminateAsync(c.Id)">Расторгнуть</button>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@code {
+    private List<Premise> _premises = new();
+    private List<ApplicationUser> _tenants = new();
+    private List<Contract> _contracts = new();
+
+    private int _premiseId;
+    private string _tenantId = "";
+    private DateTime _start = DateTime.Today;
+    private DateTime _end = DateTime.Today.AddYears(1);
+    private decimal _amount;
+
+    private readonly Dictionary<int, DateTime> _extendDates = new();
+
+    private string _landlordId = "";
+    private string? _message;
+    private bool _isError;
+    private bool _busy;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var state = await Auth.GetAuthenticationStateAsync();
+        _landlordId = state.User.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
+
+        _tenants = (await UserManager.GetUsersInRoleAsync(Roles.Tenant)).ToList();
+        await ReloadAsync();
+    }
+
+    private async Task ReloadAsync()
+    {
+        _premises = await Premises.GetByLandlordAsync(_landlordId);
+        _contracts = await ContractSvc.GetContractsForLandlordAsync(_landlordId);
+    }
+
+    private async Task OnPremiseChanged(ChangeEventArgs e)
+    {
+        _premiseId = int.TryParse(e.Value?.ToString(), out var id) ? id : 0;
+        var premise = _premises.FirstOrDefault(p => p.Id == _premiseId);
+        if (premise is not null)
+            _amount = ContractService.CalculateMonthlyAmount(premise);
+        await Task.CompletedTask;
+    }
+
+    private async Task CreateAsync()
+    {
+        _message = null;
+        if (_premiseId == 0) { Fail("Выберите помещение."); return; }
+        if (string.IsNullOrEmpty(_tenantId)) { Fail("Выберите арендатора."); return; }
+
+        _busy = true;
+        try
+        {
+            var result = await ContractSvc.CreateContractAsync(_premiseId, _tenantId, _start, _end,
+                _amount > 0 ? _amount : null);
+
+            _isError = !result.Success;
+            _message = result.Success ? "Договор успешно оформлен." : result.Error;
+
+            if (result.Success)
+            {
+                _premiseId = 0;
+                _tenantId = "";
+                _amount = 0;
+                _start = DateTime.Today;
+                _end = DateTime.Today.AddYears(1);
+            }
+            await ReloadAsync();
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task ExtendAsync(int contractId)
+    {
+        var newEnd = GetExtendDate(_contracts.First(c => c.Id == contractId));
+        var result = await ContractSvc.ExtendContractAsync(contractId, newEnd);
+        _isError = !result.Success;
+        _message = result.Success ? "Договор продлён." : result.Error;
+        await ReloadAsync();
+    }
+
+    private async Task TerminateAsync(int contractId)
+    {
+        var result = await ContractSvc.TerminateContractAsync(contractId);
+        _isError = !result.Success;
+        _message = result.Success ? "Договор расторгнут." : result.Error;
+        await ReloadAsync();
+    }
+
+    private DateTime GetExtendDate(Contract c) =>
+        _extendDates.TryGetValue(c.Id, out var d) ? d : c.EndDate.AddMonths(1);
+
+    private void SetExtendDate(int contractId, string? value)
+    {
+        if (DateTime.TryParse(value, out var d)) _extendDates[contractId] = d;
+    }
+
+    private void Fail(string msg) { _isError = true; _message = msg; }
+
+    private RenderFragment StatusBadge(Contract c) => builder =>
+    {
+        string cls, text;
+        var today = DateTime.UtcNow.Date;
+        if (c.Status == ContractStatus.PendingSignature) { cls = "badge badge-pending"; text = "Ожидает подписания"; }
+        else if (c.Status == ContractStatus.Terminated) { cls = "badge badge-overdue"; text = "Расторгнут"; }
+        else if (c.EndDate < today) { cls = "badge badge-neutral"; text = "Завершён"; }
+        else if (c.StartDate > today) { cls = "badge badge-pending"; text = "Запланирован"; }
+        else { cls = "badge badge-available"; text = "Действует"; }
+
+        builder.OpenElement(0, "span");
+        builder.AddAttribute(1, "class", cls);
+        builder.AddContent(2, text);
+        builder.CloseElement();
+    };
+}

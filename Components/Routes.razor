@@ -1,0 +1,26 @@
+@using Microsoft.AspNetCore.Components.Authorization
+
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(MainLayout)">
+            <NotAuthorized>
+                @if (context.User.Identity?.IsAuthenticated != true)
+                {
+                    <RedirectToLogin />
+                }
+                else
+                {
+                    <div class="access-denied">
+                        <h2>Доступ запрещён</h2>
+                        <p>У вашей роли нет прав для просмотра этой страницы.</p>
+                        <a class="btn btn-primary" href="/">На главную</a>
+                    </div>
+                }
+            </NotAuthorized>
+            <Authorizing>
+                <div class="loading">Загрузка…</div>
+            </Authorizing>
+        </AuthorizeRouteView>
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+</Router>
